@@ -1,0 +1,93 @@
+We’re using the PyTorch implementation (cgn-pytorch==0.4.3), which is a reimplementation of Wen Tao Yuan et al., “Contact-GraspNet: Efficient 6-DoF Grasp Generation in Cluttered Scenes”, originally released in TensorFlow by Stanford/Toyota CSRL.
+
+
+
+
+
+Installation steps
+
+
+mkdir ~/grasp6d_infer && cd ~/grasp6d_infer
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip wheel setuptools
+
+
+# Install PyTorch + dependencies (with CUDA 12)
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+
+#  Install CGN and its deps
+pip install cgn-pytorch==0.4.3 --no-deps
+pip install numpy==1.26.2 scipy==1.11.4 scikit-learn==1.3.2 open3d==0.19.0 opencv-python==4.10.0.84 tqdm
+pip install importlib-resources==6.1.1 trimesh==4.10.0 psutil==5.9.6
+pip install torch-geometric==2.4.0 torch-cluster==1.6.3 torch-scatter==2.1.2 torch-sparse==0.6.18 torch-spline-conv==1.2.2
+
+python - <<'PY'
+import torch, cgn_pytorch
+print("Torch:", torch.__version__)
+m, _, _ = cgn_pytorch.from_pretrained()
+print("CGN loaded successfully, CUDA:", torch.cuda.is_available())
+PY
+
+
+
+Input:
+
+A 3D point cloud (shape ≈ [N, 3]) — from RealSense or synthetic data
+
+Optionally per-point RGB (shape ≈ [N, 3])
+
+Output:
+
+poses: Array of 4×4 homogeneous transforms (grasp poses)
+
+scores: Confidence for each grasp (0–1)
+
+widths: Predicted gripper opening width [m]
+
+
+############ simple test without realsense
+
+python test_cgn_dummy.py
+
+output expected
+
+synthetic pts: (20000, 3)
+Initializing net...
+...net initialized.
+✅ Got 50 grasps ≥0.6 confidence
+
+#####################
+
+
+
+
+
+Paper:
+Yuan, W., et al., “Contact-GraspNet: Efficient 6-DoF Grasp Generation in Cluttered Scenes”, ICRA 2021
+https://arxiv.org/abs/2103.14127
+
+Original TensorFlow repo:
+https://github.com/wentaoyuan/contact_graspnet
+
+PyTorch Port:
+https://github.com/Xrenyao/cgn-pytorch
+
+
+(the one installed via pip install cgn-pytorch)
+
+Model Input Docs (PyTorch port):
+The inference() function is at
+~/.venv/lib/python3.12/site-packages/cgn_pytorch/inference.py
+and is defined as:
+
+
+
+
+
+Typical Troubleshooting
+Issue	Fix
+TypeError: new(): data must be a sequence (got dict)	Ensure you call inference(model, pts) not model.infer_pointcloud()
+torch-cluster build error	Install PyTorch first, then use the wheel as above
+Missing RealSense driver	Install sudo apt install librealsense2-utils librealsense2-dev
+Open3D not showing	Run without sudo, ensure display server active
