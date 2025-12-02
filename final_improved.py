@@ -98,8 +98,8 @@ def main():
         print("→ Filtered point cloud:", pts.shape[0])
 
         # Limit to 40k pts max
-        if pts.shape[0] > 40000:
-            idx = np.random.choice(pts.shape[0], 40000, replace=False)
+        if pts.shape[0] > 80000:
+            idx = np.random.choice(pts.shape[0], 80000, replace=False)
             pts, cols = pts[idx], cols[idx]
 
         print("Loading Contact-GraspNet...")
