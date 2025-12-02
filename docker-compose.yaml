@@ -1,0 +1,17 @@
+services:
+  graspomatic:
+    build: .
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics
+      - DISPLAY=${DISPLAY}
+    volumes:
+      - .:/app
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - /dev:/dev
+      - /run/udev:/run/udev:ro
+    privileged: true
+    network_mode: host
+    stdin_open: true
+    tty: true

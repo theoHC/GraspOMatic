@@ -5,7 +5,6 @@ import torch, time
 from scipy.spatial.transform import Rotation as R
 from cgn_pytorch import from_pretrained, inference as cgn_inference
 
-
 def print_grasps(poses, scores, widths, limit=25):
     print(f"\n==== Found {len(scores)} Grasp Candidates ====\n")
     if len(scores) == 0:
