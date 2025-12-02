@@ -82,8 +82,8 @@ RUN git clone https://github.com/facebookresearch/sam2.git /tmp/sam2 && \
 # Grounding DINO - pin transformers for PyTorch 2.1.1 compatibility
 # ============================================================
 RUN pip3 install --no-cache-dir \
-    "transformers==4.36.0" \
-    "accelerate==0.25.0"
+    "transformers==4.40.0" \
+    "accelerate==0.28.0"
 
 # ============================================================
 # cgn-pytorch with all its dependencies
