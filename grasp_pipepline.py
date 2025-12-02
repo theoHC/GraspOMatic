@@ -126,47 +126,74 @@ class GraspPipeline:
         
         return combined_mask.astype(bool)
     
-    def create_masked_pointcloud(self, depth_raw, color_bgr, intrinsics, depth_scale,
-                                  mask, min_z=0.15, max_z=1.0):
-        """
-        Create point cloud from RGBD, masked to segmented region only.
-        """
-        depth = depth_raw.astype(np.float32) * depth_scale
-        h, w = depth.shape
-        
-        fx, fy = intrinsics.fx, intrinsics.fy
-        cx, cy = intrinsics.ppx, intrinsics.ppy
-        
-        ys, xs = np.indices((h, w))
-        
-        # Apply depth limits
-        valid = (depth > min_z) & (depth < max_z)
-        
-        # Apply segmentation mask
-        # Resize mask if dimensions don't match
-        if mask.shape != depth.shape:
-            mask_resized = cv2.resize(
-                mask.astype(np.uint8), 
-                (w, h), 
-                interpolation=cv2.INTER_NEAREST
-            ).astype(bool)
-        else:
-            mask_resized = mask
-        
-        valid &= mask_resized
-        
-        xs_v = xs[valid]
-        ys_v = ys[valid]
-        d_v = depth[valid]
-        
-        x = (xs_v - cx) * d_v / fx
-        y = (ys_v - cy) * d_v / fy
-        z = d_v
-        
-        pts = np.stack((x, y, z), axis=-1).astype(np.float32)
-        cols_rgb = color_bgr[valid][..., ::-1] / 255.0  # BGR → RGB
-        
-        return pts, cols_rgb
+    def create_masked_pointcloud(self, depth_raw, color_bgr, intrinsics, depth_scale, 
+                                    mask, min_z=0.15, max_z=1.0):
+            """
+            Create point cloud from RGBD, masked to segmented region only.
+            Includes Statistical Outlier Removal AND DBSCAN Clustering to kill floating noise.
+            """
+            depth = depth_raw.astype(np.float32) * depth_scale
+            
+            h, w = depth.shape
+            
+            fx, fy = intrinsics.fx, intrinsics.fy
+            cx, cy = intrinsics.ppx, intrinsics.ppy
+            
+            ys, xs = np.indices((h, w))
+            
+            # Apply depth limits
+            valid = (depth > min_z) & (depth < max_z)
+            
+            # Apply segmentation mask
+            if mask.shape != depth.shape:
+                mask_resized = cv2.resize(
+                    mask.astype(np.uint8), 
+                    (w, h), 
+                    interpolation=cv2.INTER_NEAREST
+                ).astype(bool)
+            else:
+                mask_resized = mask
+                
+            valid &= mask_resized
+            
+            xs_v = xs[valid]
+            ys_v = ys[valid]
+            d_v = depth[valid]
+            
+            x = (xs_v - cx) * d_v / fx
+            y = (ys_v - cy) * d_v / fy
+            z = d_v
+            
+            pts = np.stack((x, y, z), axis=-1).astype(np.float32)
+            cols_rgb = color_bgr[valid][..., ::-1] / 255.0  # BGR -> RGB
+            
+            # --- CLEANING PIPELINE ---
+            pcd = o3d.geometry.PointCloud()
+            pcd.points = o3d.utility.Vector3dVector(pts)
+            pcd.colors = o3d.utility.Vector3dVector(cols_rgb)
+            
+            if len(pts) > 10:
+                # 1. Statistical Outlier Removal (Cleans sparse "dust")
+                pcd, _ = pcd.remove_statistical_outlier(nb_neighbors=50, std_ratio=1.0)
+
+                # 2. DBSCAN Clustering (Cleans floating "chunks")
+                # eps=0.02 means points must be within 2cm to be connected.
+                # min_points=50 means a cluster must have at least 50 points.
+                labels = np.array(pcd.cluster_dbscan(eps=0.02, min_points=50, print_progress=False))
+                
+                if len(labels) > 0 and labels.max() >= 0:
+                    # Find the largest cluster (assuming the object is the biggest thing)
+                    counts = np.bincount(labels[labels >= 0])
+                    largest_cluster_idx = np.argmax(counts)
+                    
+                    # Keep only points belonging to the largest cluster
+                    valid_ind = np.where(labels == largest_cluster_idx)[0]
+                    pcd = pcd.select_by_index(valid_ind)
+
+            pts_clean = np.asarray(pcd.points)
+            cols_clean = np.asarray(pcd.colors)
+            
+            return pts_clean, cols_clean
     
     def generate_grasps(self, points, threshold=0.5, max_points=40000):
         """
@@ -190,79 +217,412 @@ class GraspPipeline:
         
         return poses, scores, widths
     
-    def visualize_results(self, color_image, mask, boxes, labels, points, colors, 
-                          grasp_poses, grasp_scores, num_grasps=20):
-        """
-        Visualize detection, segmentation, and grasps.
-        """
-        # --- 2D Visualization (OpenCV) ---
-        vis_image = color_image.copy()
-        
-        # Draw mask overlay
-        if mask is not None and mask.any():
-            mask_resized = mask
-            if mask.shape != color_image.shape[:2]:
-                mask_resized = cv2.resize(
-                    mask.astype(np.uint8),
-                    (color_image.shape[1], color_image.shape[0]),
-                    interpolation=cv2.INTER_NEAREST
-                ).astype(bool)
-            
-            overlay = vis_image.copy()
-            overlay[mask_resized] = [0, 255, 0]  # Green mask
-            vis_image = cv2.addWeighted(vis_image, 0.7, overlay, 0.3, 0)
-        
-        # Draw bounding boxes
-        for box, label in zip(boxes, labels):
-            x1, y1, x2, y2 = map(int, box)
-            cv2.rectangle(vis_image, (x1, y1), (x2, y2), (0, 255, 0), 2)
-            cv2.putText(vis_image, str(label), (x1, y1 - 10),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-        
-        # Add grasp count
-        cv2.putText(vis_image, f"Grasps: {len(grasp_scores)}", (10, 30),
-                   cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
-        
-        cv2.imshow("Detection & Segmentation", vis_image)
-        
-        # --- 3D Visualization (Open3D) ---
-        if len(points) > 0:
-            pcd = o3d.geometry.PointCloud()
-            pcd.points = o3d.utility.Vector3dVector(points)
-            pcd.colors = o3d.utility.Vector3dVector(colors)
-            
-            geometries = [pcd]
-            
-            # Add grasp frames
-            for i in range(min(num_grasps, len(grasp_scores))):
-                frame = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.03)
-                frame.transform(grasp_poses[i])
-                geometries.append(frame)
-            
-            o3d.visualization.draw_geometries(
-                geometries,
-                window_name="Masked Point Cloud + Grasps"
-            )
-    
-    def print_grasps(self, poses, scores, widths, limit=10):
-        """Print top grasps"""
-        print(f"\n{'='*50}")
-        print(f"Found {len(scores)} Grasp Candidates")
-        print(f"{'='*50}\n")
-        
-        if len(scores) == 0:
-            print("No grasps found above threshold.\n")
-            return
-        
-        for i in range(min(limit, len(scores))):
-            pos = poses[i][:3, 3]
-            quat = R.from_matrix(poses[i][:3, :3]).as_quat()
-            print(
-                f"Grasp {i+1}: "
-                f"pos=[{pos[0]:.3f}, {pos[1]:.3f}, {pos[2]:.3f}] "
-                f"score={scores[i]:.3f} width={widths[i]:.4f}"
-            )
 
+    def print_grasps(self, poses, scores, widths, max_to_print=10):
+        """Pretty-print top grasps"""
+        n = min(len(scores), max_to_print)
+        print("\n=== Top Grasps ===")
+        if n == 0:
+            print("No grasps found.")
+            return
+
+        for i in range(n):
+            print(f"\nGrasp {i+1}:")
+            print(f"  Score:  {scores[i]:.3f}")
+            print(f"  Width:  {widths[i]:.4f} m")
+            print(f"  Pose:\n{poses[i]}")
+
+    # def create_gripper(self, pos, width, color, Rmat, jaw_length=0.05, tube_radius=0.004):
+    #         """
+    #         Create a "Tuning Fork" style gripper based on Contact-GraspNet frame.
+    #         CGN Frame Convention:
+    #         X (Red)   = Approach (along fingers)
+    #         Y (Green) = Baseline (between fingers)
+    #         Z (Blue)  = Axis orthogonal to the grasp plane
+    #         """
+    #         # --- Force Clamp Width ---
+    #         w_raw = float(width)
+    #         if w_raw > 0.15 or w_raw <= 0.001: 
+    #             width_m = 0.08 
+    #         else:
+    #             width_m = w_raw
+
+    #         # --- EXTRACT GRASP AXES ---
+    #         # We trust Rmat is correct from the network. 
+    #         # We just need to draw cylinders along these specific vectors.
+    #         x_axis = Rmat[:3, 0] # Approach direction
+    #         y_axis = Rmat[:3, 1] # Finger separation direction (Baseline)
+    #         z_axis = Rmat[:3, 2] # Orthogonal axis
+
+    #         # --- GEOMETRIC CALCULATIONS ---
+    #         # The fingers are separated along the Y-axis (Green)
+    #         jaw_offset = y_axis * (width_m / 2.0)
+            
+    #         # 1. Contact Points (Tips of fingers)
+    #         # We assume 'pos' is the center point between the fingertips
+    #         p_left_tip  = pos - jaw_offset
+    #         p_right_tip = pos + jaw_offset
+            
+    #         # 2. Base Points (Where fingers connect to bar)
+    #         # Fingers extend BACKWARDS from the tip along the negative X-axis
+    #         p_left_base   = p_left_tip - (x_axis * jaw_length)
+    #         p_right_base  = p_right_tip - (x_axis * jaw_length)
+
+    #         # 3. Centers (for placing cylinders)
+    #         center_left_finger  = (p_left_tip + p_left_base) / 2.0
+    #         center_right_finger = (p_right_tip + p_right_base) / 2.0
+    #         center_back_bar     = (p_left_base + p_right_base) / 2.0
+
+    #         # 4. Handle (Extends backwards from the bar along negative X)
+    #         handle_length = 0.04
+    #         p_handle_end  = center_back_bar - (x_axis * handle_length)
+    #         center_handle = (center_back_bar + p_handle_end) / 2.0
+
+    #         # --- ROTATION CALCULATIONS ---
+    #         # Open3D Cylinder is created along (0,0,1) [Z-axis]
+            
+    #         # A. Rotation to align Cylinder-Z with Grasp-X (Approach)
+    #         # We rotate -90 degrees around Y-axis to map Z to X
+    #         # [0, 0, 1] -> [1, 0, 0]
+    #         R_z_to_x = o3d.geometry.get_rotation_matrix_from_xyz([0, np.pi/2, 0])
+    #         R_cylinder_along_x = Rmat @ R_z_to_x
+
+    #         # B. Rotation to align Cylinder-Z with Grasp-Y (Baseline/BackBar)
+    #         # We rotate 90 degrees around X-axis to map Z to -Y, then fix sign...
+    #         # Actually, simpler: just use look_at or explicit rotation.
+    #         # Let's map Z [0,0,1] to Y [0,1,0]. Rotation of -90 around X.
+    #         R_z_to_y = o3d.geometry.get_rotation_matrix_from_xyz([-np.pi/2, 0, 0])
+    #         R_cylinder_along_y = Rmat @ R_z_to_y
+
+    #         geometries = []
+            
+    #         def make_cyl(radius, height, R, center, c):
+    #             cyl = o3d.geometry.TriangleMesh.create_cylinder(radius=radius, height=height)
+    #             # Apply orientation
+    #             cyl.rotate(R, center=[0,0,0])
+    #             # Move to position
+    #             cyl.translate(center)
+    #             cyl.compute_vertex_normals()
+    #             cyl.paint_uniform_color(c)
+    #             return cyl
+
+    #         # Left Finger (Runs along X)
+    #         geometries.append(make_cyl(tube_radius, jaw_length, R_cylinder_along_x, center_left_finger, color))
+            
+    #         # Right Finger (Runs along X)
+    #         geometries.append(make_cyl(tube_radius, jaw_length, R_cylinder_along_x, center_right_finger, color))
+            
+    #         # Back Bar (Runs along Y!) <-- THIS WAS LIKELY THE BUG
+    #         geometries.append(make_cyl(tube_radius, width_m, R_cylinder_along_y, center_back_bar, color))
+            
+    #         # Handle (Runs along X)
+    #         geometries.append(make_cyl(tube_radius, handle_length, R_cylinder_along_x, center_handle, color))
+
+    #         return geometries
+    # def create_gripper(self, pos, width, color, Rmat, jaw_length=0.05, tube_radius=0.004):
+    #     """
+    #     DEBUG MODE: Instead of a gripper, draw the Coordinate Axes.
+        
+    #     LEGEND:
+    #     - RED Line   = X-Axis
+    #     - GREEN Line = Y-Axis
+    #     - BLUE Line  = Z-Axis
+        
+    #     INSTRUCTIONS:
+    #     1. Look at the lines touching the Pringles can.
+    #     2. Which color line points INTO the can? (That is your Approach Axis)
+    #     3. Which color line connects the two potential contact points? (That is your Baseline Axis)
+    #     """
+        
+    #     # Create a coordinate frame at the grasp origin
+    #     # Open3D has a built-in helper for this!
+    #     # size=0.05 means the axes are 5cm long
+    #     frame = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.05, origin=[0,0,0])
+        
+    #     # Apply the rotation from the grasp pose
+    #     frame.rotate(Rmat, center=[0,0,0])
+        
+    #     # Move it to the grasp position
+    #     frame.translate(pos)
+        
+    #     # Return it as a list (to match your existing loop structure)
+    #     return [frame]
+
+    # def create_gripper(self, pos, width, color, Rmat, jaw_length=0.05, tube_radius=0.004):
+    #     """
+    #     Create gripper geometry based on the visual evidence:
+    #     - Z-Axis (Blue) = Approach (Hand -> Object)
+    #     - X-Axis (Red)  = Width (Finger Separation)
+    #     - Y-Axis (Green)= Orthogonal (Height)
+    #     """
+    #     # --- Force Clamp Width ---
+    #     w_raw = float(width)
+    #     if w_raw > 0.15 or w_raw <= 0.001: 
+    #         width_m = 0.08 
+    #     else:
+    #         width_m = w_raw
+
+    #     # --- EXTRACT AXES (Based on Visual Debugging) ---
+    #     x_axis = Rmat[:3, 0] # Red   = Width / Separation
+    #     y_axis = Rmat[:3, 1] # Green = Orthogonal
+    #     z_axis = Rmat[:3, 2] # Blue  = Approach (Points INTO object)
+
+    #     # --- GEOMETRIC CALCULATIONS ---
+    #     # 1. Separation is along the X-axis (Red)
+    #     half_w = width_m / 2.0
+        
+    #     # 'pos' is the grasp center (between fingertips)
+    #     center = pos 
+
+    #     # 2. Calculate Key Points
+    #     # Fingertips are separated along X
+    #     p_left_tip  = center - (x_axis * half_w)
+    #     p_right_tip = center + (x_axis * half_w)
+        
+    #     # Finger Bases are "backwards" along the negative Z-axis
+    #     # (Since Z points INTO the object, we go -Z to find the hand base)
+    #     p_left_base   = p_left_tip - (z_axis * jaw_length)
+    #     p_right_base  = p_right_tip - (z_axis * jaw_length)
+
+    #     # 3. Centers for Cylinders
+    #     center_left_finger  = (p_left_tip + p_left_base) / 2.0
+    #     center_right_finger = (p_right_tip + p_right_base) / 2.0
+    #     center_back_bar     = (p_left_base + p_right_base) / 2.0
+        
+    #     # 4. Handle (extends further back from the bar)
+    #     handle_len = 0.04
+    #     p_handle_end  = center_back_bar - (z_axis * handle_len)
+    #     center_handle = (center_back_bar + p_handle_end) / 2.0
+
+    #     # --- ROTATION MATRICES ---
+    #     # We need to rotate the default Open3D cylinder (which points along Z [0,0,1])
+    #     # to match our Grasp Axes.
+
+    #     # A. Fingers & Handle: They run along the Z-axis of the Grasp Frame.
+    #     # Since the cylinder is ALREADY Z, we just apply Rmat directly!
+    #     R_aligned_z = Rmat
+
+    #     # B. Back Bar: It runs along the X-axis of the Grasp Frame.
+    #     # We need to rotate Cylinder-Z to Grasp-X.
+    #     # Rotation: +90 deg around Y-axis maps Z(0,0,1) -> X(1,0,0)
+    #     R_z_to_x = o3d.geometry.get_rotation_matrix_from_xyz([0, np.pi/2, 0])
+    #     R_aligned_x = Rmat @ R_z_to_x
+
+    #     # --- CREATE MESHES ---
+    #     geometries = []
+        
+    #     def make_cyl(radius, height, R, center, c):
+    #         cyl = o3d.geometry.TriangleMesh.create_cylinder(radius=radius, height=height)
+    #         cyl.rotate(R, center=[0,0,0])
+    #         cyl.translate(center)
+    #         cyl.compute_vertex_normals()
+    #         cyl.paint_uniform_color(c)
+    #         return cyl
+
+    #     # Left Finger (Runs along Z)
+    #     geometries.append(make_cyl(tube_radius, jaw_length, R_aligned_z, center_left_finger, color))
+        
+    #     # Right Finger (Runs along Z)
+    #     geometries.append(make_cyl(tube_radius, jaw_length, R_aligned_z, center_right_finger, color))
+        
+    #     # Back Bar (Runs along X - Connecting the bases)
+    #     geometries.append(make_cyl(tube_radius, width_m, R_aligned_x, center_back_bar, color))
+        
+    #     # Handle (Runs along Z)
+    #     geometries.append(make_cyl(tube_radius, handle_len, R_aligned_z, center_handle, color))
+
+    #     return geometries
+    def create_gripper(self, pos, width, color, Rmat, jaw_length=0.05, tube_radius=0.004):
+        """
+        Create gripper geometry based on the visual evidence:
+        - Z-Axis (Blue) = Approach (Hand -> Object)
+        - X-Axis (Red)  = Width (Finger Separation)
+        - Y-Axis (Green)= Orthogonal (Height)
+        """
+        # --- Force Clamp Width ---
+        # Your logs showed widths like 8553.0m. We MUST clamp this.
+        w_raw = float(width)
+        if w_raw > 0.15 or w_raw <= 0.001: 
+            width_m = 0.08 
+        else:
+            width_m = w_raw
+
+        # --- EXTRACT AXES (Based on Visual Debugging) ---
+        x_axis = Rmat[:3, 0] # Red   = Width / Separation
+        y_axis = Rmat[:3, 1] # Green = Orthogonal
+        z_axis = Rmat[:3, 2] # Blue  = Approach (Points INTO object)
+
+        # --- GEOMETRIC CALCULATIONS ---
+        # 1. Separation is along the X-axis (Red)
+        half_w = width_m / 2.0
+        
+        # 'pos' is the grasp center (between fingertips)
+        center = pos 
+
+        # 2. Calculate Key Points
+        # Fingertips are separated along X
+        p_left_tip  = center - (x_axis * half_w)
+        p_right_tip = center + (x_axis * half_w)
+        
+        # Finger Bases are "backwards" along the negative Z-axis
+        # (Since Z points INTO the object, we go -Z to find the hand base)
+        p_left_base   = p_left_tip - (z_axis * jaw_length)
+        p_right_base  = p_right_tip - (z_axis * jaw_length)
+
+        # 3. Centers for Cylinders
+        center_left_finger  = (p_left_tip + p_left_base) / 2.0
+        center_right_finger = (p_right_tip + p_right_base) / 2.0
+        center_back_bar     = (p_left_base + p_right_base) / 2.0
+        
+        # 4. Handle (extends further back from the bar)
+        handle_len = 0.04
+        p_handle_end  = center_back_bar - (z_axis * handle_len)
+        center_handle = (center_back_bar + p_handle_end) / 2.0
+
+        # --- ROTATION MATRICES ---
+        # We need to rotate the default Open3D cylinder (which points along Z [0,0,1])
+        # to match our Grasp Axes.
+
+        # A. Fingers & Handle: They run along the Z-axis of the Grasp Frame.
+        # Since the cylinder is ALREADY Z, we just apply Rmat directly!
+        R_aligned_z = Rmat
+
+        # B. Back Bar: It runs along the X-axis of the Grasp Frame.
+        # We need to rotate Cylinder-Z to Grasp-X.
+        # Rotation: +90 deg around Y-axis maps Z(0,0,1) -> X(1,0,0)
+        R_z_to_x = o3d.geometry.get_rotation_matrix_from_xyz([0, np.pi/2, 0])
+        R_aligned_x = Rmat @ R_z_to_x
+
+        # --- CREATE MESHES ---
+        geometries = []
+        
+        def make_cyl(radius, height, R, center, c):
+            cyl = o3d.geometry.TriangleMesh.create_cylinder(radius=radius, height=height)
+            cyl.rotate(R, center=[0,0,0])
+            cyl.translate(center)
+            cyl.compute_vertex_normals()
+            cyl.paint_uniform_color(c)
+            return cyl
+
+        # Left Finger (Runs along Z)
+        geometries.append(make_cyl(tube_radius, jaw_length, R_aligned_z, center_left_finger, color))
+        
+        # Right Finger (Runs along Z)
+        geometries.append(make_cyl(tube_radius, jaw_length, R_aligned_z, center_right_finger, color))
+        
+        # Back Bar (Runs along X - Connecting the bases)
+        geometries.append(make_cyl(tube_radius, width_m, R_aligned_x, center_back_bar, color))
+        
+        # Handle (Runs along Z)
+        geometries.append(make_cyl(tube_radius, handle_len, R_aligned_z, center_handle, color))
+
+        return geometries
+    
+    def visualize_results(self, color_image, mask, boxes, labels, points, colors, 
+                            grasp_poses, grasp_scores, grasp_widths, num_grasps=20):
+            """
+            Visualize detection, segmentation, and grasps with color-coded grippers.
+            Non-blocking loop to keep both OpenCV and Open3D windows responsive.
+            """
+            # --- 2D Visualization (OpenCV) ---
+            vis_image = color_image.copy()
+            
+            # Draw mask overlay
+            if mask is not None and mask.any():
+                mask_resized = mask
+                if mask.shape != color_image.shape[:2]:
+                    mask_resized = cv2.resize(
+                        mask.astype(np.uint8), 
+                        (color_image.shape[1], color_image.shape[0]), 
+                        interpolation=cv2.INTER_NEAREST
+                    ).astype(bool)
+                
+                overlay = vis_image.copy()
+                overlay[mask_resized] = [0, 255, 0]
+                vis_image = cv2.addWeighted(vis_image, 0.7, overlay, 0.3, 0)
+            
+            # Draw boxes
+            for box, label in zip(boxes, labels):
+                x1, y1, x2, y2 = map(int, box)
+                cv2.rectangle(vis_image, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                cv2.putText(vis_image, str(label), (x1, y1 - 10),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+            
+            cv2.putText(vis_image, f"Grasps: {len(grasp_scores)}", (10, 30),
+                        cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+            
+            # Create the window initially
+            cv2.imshow("Detection & Segmentation", vis_image)
+            cv2.waitKey(1) 
+
+            # --- 3D Visualization (Open3D) ---
+            if len(points) > 0:
+                pcd = o3d.geometry.PointCloud()
+                pcd.points = o3d.utility.Vector3dVector(points)
+                pcd.colors = o3d.utility.Vector3dVector(colors)
+
+                # Fix Open3D upside-down orientation
+                flip_x = np.array([[1,0,0,0], [0,-1,0,0], [0,0,-1,0], [0,0,0,1]])
+                pcd.transform(flip_x)
+
+                vis = o3d.visualization.Visualizer()
+                vis.create_window("Masked Point Cloud + Grippers", width=1200, height=700)
+                vis.add_geometry(pcd)
+
+                # --- COLOR MAPPING LOGIC ---
+                n_show = min(num_grasps, len(grasp_scores))
+                if n_show > 0:
+                    min_score = np.min(grasp_scores[:n_show])
+                    max_score = np.max(grasp_scores[:n_show])
+                    range_score = max_score - min_score if max_score > min_score else 1.0
+
+                for i in range(n_show):
+                    pose = grasp_poses[i]
+                    score = grasp_scores[i]
+                    width = grasp_widths[i]
+
+                    # Generate Color: 0.0 (Worst)->Red, 1.0 (Best)->Green
+                    val = (score - min_score) / range_score
+                    gripper_color = [1.0 - val, val, 0.0]
+
+                    geom_list = self.create_gripper(pose[:3,3], width, gripper_color, pose[:3,:3], 
+                                                    jaw_length=0.05, tube_radius=0.004)
+                    
+                    for g in geom_list:
+                        if isinstance(g, o3d.geometry.Geometry):
+                            g.transform(flip_x)
+                        vis.add_geometry(g)
+
+                # Camera Setup
+                ctr = vis.get_view_control()
+                bbox = pcd.get_axis_aligned_bounding_box()
+                ctr.set_lookat(bbox.get_center())
+                try:
+                    ctr.set_zoom(0.35)
+                except:
+                    ctr.fit_bounds()
+
+                # --- CUSTOM EVENT LOOP ---
+                print("\n[Controls]")
+                print("  - Press 'q' or 'ESC' on the OpenCV window to exit.")
+                print("  - Close the Open3D window to exit.")
+                
+                while True:
+                    # 1. Update Open3D
+                    # poll_events returns False if the window is closed
+                    if not vis.poll_events():
+                        break
+                    vis.update_renderer()
+
+                    # 2. Update OpenCV
+                    # We show the image every loop to keep the window responsive
+                    cv2.imshow("Detection & Segmentation", vis_image)
+                    key = cv2.waitKey(10) & 0xFF
+                    
+                    if key == ord('q') or key == 27: # q or ESC
+                        break
+                
+                vis.destroy_window()
 
 def start_realsense():
     """Initialize RealSense camera"""
@@ -377,10 +737,9 @@ def main():
             print("\n[Visualization] Press any key on 2D window, close 3D window to exit...")
             pipeline.visualize_results(
                 color_bgr, mask, boxes, labels,
-                points, colors, grasp_poses, grasp_scores
+                points, colors, grasp_poses, grasp_scores, grasp_widths
             )
-            cv2.waitKey(0)
-        
+
     finally:
         pipe.stop()
         cv2.destroyAllWindows()
