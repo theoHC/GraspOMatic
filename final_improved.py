@@ -94,7 +94,7 @@ def main():
 
         pts, cols = rgbd_to_pointcloud(
             depth_raw, color_bgr, intr, depth_scale,
-            min_z=0.15, max_z=0.60, crop_margin=0.20
+            min_z=0.15, max_z=1.0, crop_margin=0.00
         )
         print("→ Filtered point cloud:", pts.shape[0])
 
