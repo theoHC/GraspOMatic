@@ -131,8 +131,7 @@ class GraspPipeline:
             """
             Create point cloud from RGBD, masked to segmented region only.
             """
-            # --- DEBUG: CHECK DEPTH VALUES BEFORE FILTERING ---
-            # We look at the raw depth values inside the mask
+            # Look at the raw depth values inside the mask
             masked_depth_raw = depth_raw[mask]
             if len(masked_depth_raw) > 0:
                 # Calculate meters using the provided scale
@@ -144,7 +143,7 @@ class GraspPipeline:
             else:
                 print("\n[DEPTH DEBUG] Mask is empty!")
 
-            # Normal processing continues...
+            # Normal processing continues
             depth = depth_raw.astype(np.float32) * depth_scale
             
             h, w = depth.shape
@@ -179,7 +178,6 @@ class GraspPipeline:
             pts = np.stack((x, y, z), axis=-1).astype(np.float32)
             cols_rgb = color_bgr[valid][..., ::-1] / 255.0  # BGR -> RGB
             
-            # --- CLEANING PIPELINE ---
             pcd = o3d.geometry.PointCloud()
             pcd.points = o3d.utility.Vector3dVector(pts)
             pcd.colors = o3d.utility.Vector3dVector(cols_rgb)
@@ -208,16 +206,16 @@ class GraspPipeline:
                 print("Warning: Point cloud too sparse for grasp generation")
                 return np.array([]), np.array([]), np.array([])
             
-            # 1. Downsample
+            # Downsample
             if len(points) > max_points:
                 idx = np.random.choice(len(points), max_points, replace=False)
                 points = points[idx]
 
-            # 2. Mean Centering
+            # Mean Centering
             pc_mean = np.mean(points, axis=0)
             points_centered = points - pc_mean
 
-            # 3. Inference
+            # Inference
             print(f"DEBUG: Running inference on {len(points_centered)} points...")
             poses, scores, widths = cgn_inference(self.cgn_model, points_centered, threshold=threshold)
             
@@ -225,7 +223,6 @@ class GraspPipeline:
                 print("DEBUG: cgn_inference returned no grasps.")
                 return np.array([]), np.array([]), np.array([])
 
-            # --- UNIT FIX ---
             widths = widths.astype(np.float64)
             median_width = np.median(widths)
             if median_width > 1.0:
@@ -272,7 +269,7 @@ class GraspPipeline:
                     final_scores.append(s)
                     final_widths.append(w)
                 
-                # --- UPDATED: Stop exactly when we hit the user's requested number ---
+                # Stop exactly when we hit the user's requested number
                 if len(final_poses) >= target_count:
                     break
 
@@ -302,27 +299,26 @@ class GraspPipeline:
         - X-Axis (Red)  = Width (Finger Separation)
         - Y-Axis (Green)= Orthogonal (Height)
         """
-        # --- Force Clamp Width ---
-        # Your logs showed widths like 8553.0m. We MUST clamp this.
+        # Force Clamp Width
         w_raw = float(width)
         if w_raw > 0.15 or w_raw <= 0.001: 
             width_m = 0.08 
         else:
             width_m = w_raw
 
-        # --- EXTRACT AXES (Based on Visual Debugging) ---
+        # EXTRACT AXES
         x_axis = Rmat[:3, 0] # Red   = Width / Separation
         y_axis = Rmat[:3, 1] # Green = Orthogonal
         z_axis = Rmat[:3, 2] # Blue  = Approach (Points INTO object)
 
-        # --- GEOMETRIC CALCULATIONS ---
-        # 1. Separation is along the X-axis (Red)
+        # GEOMETRIC CALCULATIONS
+        # Separation is along the X-axis (Red)
         half_w = width_m / 2.0
         
         # 'pos' is the grasp center (between fingertips)
         center = pos 
 
-        # 2. Calculate Key Points
+        # Calculate Key Points
         # Fingertips are separated along X
         p_left_tip  = center - (x_axis * half_w)
         p_right_tip = center + (x_axis * half_w)
@@ -332,12 +328,12 @@ class GraspPipeline:
         p_left_base   = p_left_tip - (z_axis * jaw_length)
         p_right_base  = p_right_tip - (z_axis * jaw_length)
 
-        # 3. Centers for Cylinders
+        # Centers for Cylinders
         center_left_finger  = (p_left_tip + p_left_base) / 2.0
         center_right_finger = (p_right_tip + p_right_base) / 2.0
         center_back_bar     = (p_left_base + p_right_base) / 2.0
         
-        # 4. Handle (extends further back from the bar)
+        # Handle (extends further back from the bar)
         handle_len = 0.04
         p_handle_end  = center_back_bar - (z_axis * handle_len)
         center_handle = (center_back_bar + p_handle_end) / 2.0
@@ -387,7 +383,7 @@ class GraspPipeline:
             Visualize detection, segmentation, and grasps with color-coded grippers.
             Non-blocking loop to keep both OpenCV and Open3D windows responsive.
             """
-            # --- 2D Visualization (OpenCV) ---
+            # 2D Visualization (OpenCV)
             vis_image = color_image.copy()
             
             # Draw mask overlay
@@ -418,7 +414,7 @@ class GraspPipeline:
             cv2.imshow("Detection & Segmentation", vis_image)
             cv2.waitKey(1) 
 
-            # --- 3D Visualization (Open3D) ---
+            # 3D Visualization (Open3D)
             if len(points) > 0:
                 pcd = o3d.geometry.PointCloud()
                 pcd.points = o3d.utility.Vector3dVector(points)
@@ -432,7 +428,7 @@ class GraspPipeline:
                 vis.create_window("Masked Point Cloud + Grippers", width=1200, height=700)
                 vis.add_geometry(pcd)
 
-                # --- COLOR MAPPING LOGIC ---
+                # --- COLOR MAPPING LOGIC 
                 n_show = min(num_grasps, len(grasp_scores))
                 if n_show > 0:
                     min_score = np.min(grasp_scores[:n_show])
@@ -465,19 +461,18 @@ class GraspPipeline:
                 except:
                     ctr.fit_bounds()
 
-                # --- CUSTOM EVENT LOOP ---
                 print("\n[Controls]")
                 print("  - Press 'q' or 'ESC' on the OpenCV window to exit.")
                 print("  - Close the Open3D window to exit.")
                 
                 while True:
-                    # 1. Update Open3D
+                    # Update Open3D
                     # poll_events returns False if the window is closed
                     if not vis.poll_events():
                         break
                     vis.update_renderer()
 
-                    # 2. Update OpenCV
+                    # Update OpenCV
                     # We show the image every loop to keep the window responsive
                     cv2.imshow("Detection & Segmentation", vis_image)
                     key = cv2.waitKey(10) & 0xFF
@@ -527,7 +522,6 @@ def main():
     parser.add_argument("--prompt", required=True, type=str,
                         help="Object to detect (e.g., 'red cup', 'cheez-it box')")
     
-    # --- NEW ARGUMENT HERE ---
     parser.add_argument("--top", default=10, type=int,
                         help="Number of top grasps to generate and display")
     
@@ -545,7 +539,7 @@ def main():
     
     args = parser.parse_args()
     
-    # Add period to prompt (DINO quirk)
+    # Add period to prompt (DINO requirement)
     text_prompt = args.prompt if args.prompt.endswith(".") else args.prompt + "."
     
     # Initialize pipeline
@@ -564,7 +558,7 @@ def main():
         
         print(f"Captured: color={color_bgr.shape}, depth={depth_raw.shape}")
         
-        # Step 1: Detect objects with DINO
+        # Detect objects with DINO
         print("\n[Step 1] Running Grounding DINO...")
         boxes, labels, det_scores = pipeline.detect_objects(
             color_rgb, text_prompt, args.box_threshold
@@ -575,12 +569,12 @@ def main():
             print("No objects detected! Try lowering --box-threshold or different prompt.")
             return
         
-        # Step 2: Segment with SAM2
+        # Segment with SAM2
         print("\n[Step 2] Running SAM2 segmentation...")
         mask = pipeline.segment_objects(color_rgb, boxes)
         print(f"  Mask covers {mask.sum()} pixels ({100*mask.mean():.1f}% of image)")
         
-        # Step 3: Create masked point cloud
+        # Create masked point cloud
         print("\n[Step 3] Creating masked point cloud...")
         points, colors = pipeline.create_masked_pointcloud(
             depth_raw, color_bgr, intrinsics, depth_scale, 
@@ -591,23 +585,20 @@ def main():
         if len(points) < 100:
             print("Warning: Very few points in masked region. Check depth/segmentation.")
         
-        # Step 4: Generate grasps
+        # Generate grasps
         print(f"\n[Step 4] Running Contact-GraspNet (Targeting top {args.top})...")
         
-        # --- PASS args.top HERE ---
         grasp_poses, grasp_scores, grasp_widths = pipeline.generate_grasps(
             points, 
             threshold=args.grasp_threshold, 
             target_count=args.top
         )
         
-        # --- PASS args.top HERE ---
         pipeline.print_grasps(grasp_poses, grasp_scores, grasp_widths, max_to_print=args.top)
         
         # Visualize
         if args.visualize:
             print("\n[Visualization] Press any key on 2D window, close 3D window to exit...")
-            # --- PASS args.top HERE ---
             pipeline.visualize_results(
                 color_bgr, mask, boxes, labels,
                 points, colors, grasp_poses, grasp_scores, grasp_widths,
