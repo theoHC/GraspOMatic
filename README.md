@@ -5,8 +5,8 @@
   <img src="assets/shoe.gif" width="100%" />
 </p>
 
-Saif Ahmad, Andnet DeBoer, Rishika Bera, Theo Coulson
-
+Authors: Saif Ahmad, Andnet DeBoer, Rishika Bera, Theo Coulson
+--- 
 
 Step 1 install docker 
 ```
