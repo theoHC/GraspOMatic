@@ -1,8 +1,9 @@
 # GRASP-O-MATIC
 
 <!-- ![alt text](assets/image.png) <img width="208" height="148" alt="image" src="https://github.com/user-attachments/assets/843e5f3a-f47d-42a6-8bf2-1f3f3e5fd518" /> -->
-
-<video controls src="shoe.mp4" title="Title"></video>
+<p align="center">
+  <img src="assets/shoe.gif" width="100%" />
+</p>
 
 Step 1 install docker 
 ```
