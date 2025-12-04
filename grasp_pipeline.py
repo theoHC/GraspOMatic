@@ -200,9 +200,9 @@ class GraspPipeline:
             return pts_clean, cols_clean
     
     
-    def generate_grasps(self, points, threshold=0.5, max_points=20000):
+    def generate_grasps(self, points, threshold=0.5, max_points=20000, target_count=50):
             """
-            Run Contact-GraspNet with Automatic Unit Scaling (mm -> m) + Type Casting Fix.
+            Run Contact-GraspNet with Automatic Unit Scaling and Limit by target_count.
             """
             if len(points) < 50:
                 print("Warning: Point cloud too sparse for grasp generation")
@@ -225,23 +225,17 @@ class GraspPipeline:
                 print("DEBUG: cgn_inference returned no grasps.")
                 return np.array([]), np.array([]), np.array([])
 
-            # --- UNIT FIX (CRASH PATCHED) ---
-            # 1. Ensure widths is Float to prevent NumPy casting errors
+            # --- UNIT FIX ---
             widths = widths.astype(np.float64)
-            
-            # 2. Check for Millimeters (Median > 1.0 meter is impossible for a shoe)
             median_width = np.median(widths)
             if median_width > 1.0:
-                print(f"DEBUG: Detected MM scale (Median width={median_width:.2f}). Converting to Meters...")
+                print(f"DEBUG: Detected MM scale (Median width={median_width:.2f}). Converting...")
                 widths = widths / 1000.0
-                
-                # Check translation magnitude
                 trans_mag = np.mean(np.linalg.norm(poses[:, :3, 3], axis=1))
                 if trans_mag > 1.0: 
-                    print(f"DEBUG: Detected MM translation (Mag={trans_mag:.2f}). Converting...")
                     poses[:, :3, 3] = poses[:, :3, 3] / 1000.0
 
-            # 4. Restore Coordinates (Add the mean back)
+            # 4. Restore Coordinates
             poses[:, :3, 3] += pc_mean
 
             # 5. Filtering
@@ -255,23 +249,18 @@ class GraspPipeline:
             scores = scores[order]
             widths = widths[order]
 
-            min_width = 0.002  # 2mm
-            max_width = 0.15   # 15cm
-            min_dist  = 0.02   # 2cm
+            min_width = 0.002
+            max_width = 0.15
+            min_dist  = 0.02
             
-            print(f"DEBUG: Analyzing top candidates...")
-
             for i in range(len(scores)):
                 p = poses[i]
                 s = scores[i]
                 w = widths[i]
                 
-                # Filter 1: Width
                 if w < min_width or w > max_width:
-                    if i < 5: print(f"  [{i}] REJECTED Width {w:.4f}m")
                     continue
                 
-                # Filter 2: NMS
                 is_too_close = False
                 for existing_p in final_poses:
                     if np.linalg.norm(p[:3, 3] - existing_p[:3, 3]) < min_dist:
@@ -283,7 +272,8 @@ class GraspPipeline:
                     final_scores.append(s)
                     final_widths.append(w)
                 
-                if len(final_poses) >= 50:
+                # --- UPDATED: Stop exactly when we hit the user's requested number ---
+                if len(final_poses) >= target_count:
                     break
 
             print(f"DEBUG: Found {len(final_poses)} valid grasps after filtering.")
@@ -535,18 +525,23 @@ def capture_frames(pipe, align, warmup=10):
 def main():
     parser = argparse.ArgumentParser(description="Integrated Grasp Pipeline")
     parser.add_argument("--prompt", required=True, type=str,
-                       help="Object to detect (e.g., 'red cup', 'cheez-it box')")
+                        help="Object to detect (e.g., 'red cup', 'cheez-it box')")
+    
+    # --- NEW ARGUMENT HERE ---
+    parser.add_argument("--top", default=10, type=int,
+                        help="Number of top grasps to generate and display")
+    
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--box-threshold", default=0.35, type=float,
-                       help="DINO detection threshold")
+                        help="DINO detection threshold")
     parser.add_argument("--grasp-threshold", default=0.5, type=float,
-                       help="Contact-GraspNet confidence threshold")
+                        help="Contact-GraspNet confidence threshold")
     parser.add_argument("--min-depth", default=0.15, type=float,
-                       help="Minimum depth in meters")
+                        help="Minimum depth in meters")
     parser.add_argument("--max-depth", default=1.0, type=float,
-                       help="Maximum depth in meters")
+                        help="Maximum depth in meters")
     parser.add_argument("--visualize", action="store_true", default=True,
-                       help="Show visualization")
+                        help="Show visualization")
     
     args = parser.parse_args()
     
@@ -588,37 +583,41 @@ def main():
         # Step 3: Create masked point cloud
         print("\n[Step 3] Creating masked point cloud...")
         points, colors = pipeline.create_masked_pointcloud(
-            depth_raw, color_bgr, intrinsics, depth_scale,
+            depth_raw, color_bgr, intrinsics, depth_scale, 
             mask, min_z=args.min_depth, max_z=args.max_depth
         )
-
         print(f"  Point cloud: {len(points)} points")
         
         if len(points) < 100:
             print("Warning: Very few points in masked region. Check depth/segmentation.")
         
         # Step 4: Generate grasps
-        print("\n[Step 4] Running Contact-GraspNet...")
+        print(f"\n[Step 4] Running Contact-GraspNet (Targeting top {args.top})...")
+        
+        # --- PASS args.top HERE ---
         grasp_poses, grasp_scores, grasp_widths = pipeline.generate_grasps(
-            points, threshold=args.grasp_threshold
+            points, 
+            threshold=args.grasp_threshold, 
+            target_count=args.top
         )
         
-        # Print results
-        pipeline.print_grasps(grasp_poses, grasp_scores, grasp_widths)
+        # --- PASS args.top HERE ---
+        pipeline.print_grasps(grasp_poses, grasp_scores, grasp_widths, max_to_print=args.top)
         
         # Visualize
         if args.visualize:
             print("\n[Visualization] Press any key on 2D window, close 3D window to exit...")
+            # --- PASS args.top HERE ---
             pipeline.visualize_results(
                 color_bgr, mask, boxes, labels,
-                points, colors, grasp_poses, grasp_scores, grasp_widths
+                points, colors, grasp_poses, grasp_scores, grasp_widths,
+                num_grasps=args.top
             )
 
     finally:
         pipe.stop()
         cv2.destroyAllWindows()
         print("\nRealSense stopped.")
-
 
 if __name__ == "__main__":
     main()
