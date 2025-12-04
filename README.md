@@ -5,6 +5,9 @@
   <img src="assets/shoe.gif" width="100%" />
 </p>
 
+Saif Ahmad, Andnet DeBoer, Rishika Bera, Theo Coulson
+
+
 Step 1 install docker 
 ```
 https://docs.docker.com/desktop/setup/install/linux/ubuntu/
