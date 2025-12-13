@@ -52,6 +52,9 @@ xhost +local:docker
 ```
 docker compose build
 ```
+```
+ROLE=server docker compose up --build sam3d
+```
 
 ```
 newgrp docker
