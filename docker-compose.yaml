@@ -3,7 +3,7 @@ version: "3.9"
 services:
   grasp:
     build:
-      context: .               # top-level repo as build context
+      context: .
       dockerfile: grasp/Dockerfile
     runtime: nvidia
     environment:
@@ -12,6 +12,7 @@ services:
       - DISPLAY=${DISPLAY}
       - SAM3D_URL=http://sam3d:8000
       - PYTHONPATH=/app/sam-3d-objects:$PYTHONPATH
+      - ROLE=${ROLE}
     volumes:
       - ./grasp:/app
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
@@ -24,20 +25,40 @@ services:
       - sam3d
     stdin_open: true
     tty: true
+    command: >
+      sh -c "
+      if [ \"$ROLE\" = 'server' ]; then
+          echo 'Running server tasks only';
+          tail -f /dev/null;  # Or start some server task
+      else
+          echo 'Running client';
+          python3 grasp_pipeline3D.py --prompt 'mug' --top 10;
+      fi
+      "
 
   sam3d:
     build:
-      context: .               # top-level repo
+      context: .
       dockerfile: sam3d/Dockerfile
     runtime: nvidia
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
+      - ROLE=${ROLE}
     volumes:
       - ./sam3d:/app
       - shared_data:/shared
       - sam3d_checkpoints:/checkpoints
     ports:
       - "8000:8000"
+    command: >
+      sh -c "
+      if [ \"$ROLE\" = 'server' ]; then
+          python3 sam3d_server.py;
+      else
+          echo 'Skipping SAM3D server';
+          tail -f /dev/null;
+      fi
+      "
 
 volumes:
   shared_data:
