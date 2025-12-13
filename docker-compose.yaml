@@ -1,17 +1,44 @@
+version: "3.9"
+
 services:
-  graspomatic:
-    build: .
+  grasp:
+    build:
+      context: .               # top-level repo as build context
+      dockerfile: grasp/Dockerfile
     runtime: nvidia
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics
       - DISPLAY=${DISPLAY}
+      - SAM3D_URL=http://sam3d:8000
+      - PYTHONPATH=/app/sam-3d-objects:$PYTHONPATH
     volumes:
-      - .:/app
+      - ./grasp:/app
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
       - /dev:/dev
       - /run/udev:/run/udev:ro
+      - shared_data:/shared
     privileged: true
     network_mode: host
+    depends_on:
+      - sam3d
     stdin_open: true
     tty: true
+
+  sam3d:
+    build:
+      context: .               # top-level repo
+      dockerfile: sam3d/Dockerfile
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+    volumes:
+      - ./sam3d:/app
+      - shared_data:/shared
+      - sam3d_checkpoints:/checkpoints
+    ports:
+      - "8000:8000"
+
+volumes:
+  shared_data:
+  sam3d_checkpoints:

@@ -60,7 +60,7 @@ docker compose run graspomatic bash
 
 ```
 # Get the top 10 best grasps
-python3 grasp_pipeline.py --prompt "shoe" --top-n 10
+python3 grasp_pipeline.py --prompt "shoe" --top 10
 
 # Get the top 50
 python3 grasp_pipeline.py --prompt "shoe" --top-n 50
