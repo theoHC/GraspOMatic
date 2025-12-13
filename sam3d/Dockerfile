@@ -5,33 +5,43 @@ ENV PYTHONUNBUFFERED=1
 
 WORKDIR /app
 
-# Install git via conda (apt-get doesn't work on Lambda)
-RUN conda install -y git && conda clean -ya
-
 # --------------------------- 
-# Core Python packages
+# Core Python packages (added omegaconf)
 # --------------------------- 
 RUN pip install --no-cache-dir \
     numpy scipy pillow \
     trimesh open3d \
     flask gunicorn \
     einops tqdm \
-    opencv-python-headless
+    opencv-python-headless \
+    omegaconf \
+    hydra-core \
+    iopath
 
 # --------------------------- 
-# SAM-3D-Objects
+# SAM-3D-Objects (download as zip instead of git clone)
 # --------------------------- 
-RUN git clone https://github.com/facebookresearch/sam-3d-objects.git /opt/sam3d
+RUN python -c "import urllib.request; urllib.request.urlretrieve('https://github.com/facebookresearch/sam-3d-objects/archive/refs/heads/main.zip', '/tmp/sam3d.zip')" && \
+    python -c "import zipfile; zipfile.ZipFile('/tmp/sam3d.zip', 'r').extractall('/opt')" && \
+    mv /opt/sam-3d-objects-main /opt/sam3d && \
+    rm /tmp/sam3d.zip
 
 WORKDIR /opt/sam3d
 RUN pip install -e '.[dev]' || true
-RUN pip install git+https://github.com/microsoft/MoGe.git || true
+
+# Install MoGe via zip download as well
+RUN python -c "import urllib.request; urllib.request.urlretrieve('https://github.com/microsoft/MoGe/archive/refs/heads/main.zip', '/tmp/moge.zip')" && \
+    python -c "import zipfile; zipfile.ZipFile('/tmp/moge.zip', 'r').extractall('/tmp')" && \
+    pip install -e /tmp/MoGe-main || true
 
 # --------------------------- 
 # Copy server code
 # --------------------------- 
 WORKDIR /app
 COPY sam3d/sam3d_server.py /app/
+
+# Add sam3d to Python path
+ENV PYTHONPATH="/opt/sam3d:/opt/sam3d/notebook:${PYTHONPATH}"
 
 EXPOSE 8000
 

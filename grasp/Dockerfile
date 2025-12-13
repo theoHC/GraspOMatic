@@ -5,9 +5,6 @@ ENV PYTHONUNBUFFERED=1
 
 WORKDIR /app
 
-# Install git via conda (apt-get doesn't work on Lambda)
-RUN conda install -y git && conda clean -ya
-
 # ============================================================
 # Pin numpy FIRST
 # ============================================================
@@ -38,17 +35,17 @@ RUN pip install --no-cache-dir \
     "trimesh==4.0.4"
 
 # ============================================================
-# SAM2
+# SAM2 (download as zip instead of git clone)
 # ============================================================
 RUN pip install --no-cache-dir \
     hydra-core \
     iopath \
     "huggingface_hub>=0.20.0"
 
-RUN git clone https://github.com/facebookresearch/sam2.git /tmp/sam2 && \
-    cd /tmp/sam2 && \
-    SAM2_BUILD_CUDA=0 pip install --no-cache-dir --no-deps -e . && \
-    cd /
+RUN python -c "import urllib.request; urllib.request.urlretrieve('https://github.com/facebookresearch/sam2/archive/refs/heads/main.zip', '/tmp/sam2.zip')" && \
+    python -c "import zipfile; zipfile.ZipFile('/tmp/sam2.zip', 'r').extractall('/tmp')" && \
+    cd /tmp/sam2-main && \
+    SAM2_BUILD_CUDA=0 pip install --no-cache-dir --no-deps -e .
 
 # ============================================================
 # Grounding DINO
